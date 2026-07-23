@@ -93,4 +93,4 @@ input format so that the code can be inspected and adapted.
 
 ## Author
 
-Yeqin Huang — MSc dissertation, [your institution/department]
+Yeqin Huang — MSc dissertation, qmul
