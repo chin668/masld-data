@@ -7,7 +7,7 @@ the study design.
 Because all four compartments come from the same 20 patients, compartment
 comparisons are treated as repeated measures (Friedman test + post-hoc Wilcoxon
 signed-rank). Fibrosis-stage groups comprise different patients, so they are
-compared with independent-samples tests (Kruskal-Wallis across stage groups;
+compared with independent-samples tests (Kruskal-Wallis comparing F0_1 and F2_3 (healthy control excluded);
 Mann-Whitney U within each compartment). Effect sizes and bootstrap 95%
 confidence intervals are reported alongside the p values, and Benjamini-Hochberg
 correction is applied within each family of tests.
@@ -89,11 +89,14 @@ pat = (adata.obs.groupby("Patient_ID", observed=True)
             **{c: (c, "mean") for c in sig_cols})
        .reset_index())
 
+# Exclude the single healthy control (n=1); compare F0_1 vs F2_3 only.
+pat_two = pat[pat["StageGroup"].isin(["F0_1", "F2_3"])].copy()
 rows = []
 for s in sig_cols:
-    groups = [g[s].values for _, g in pat.groupby("StageGroup", observed=True)]
+    groups = [g[s].values for _, g in pat_two.groupby("StageGroup", observed=True)]
     h, p = kruskal(*groups)
     rows.append({"signature": s, "H": round(h, 2), "p_raw": p})
+
 stage = pd.DataFrame(rows)
 stage["FDR"] = multipletests(stage["p_raw"], method="fdr_bh")[1]
 stage.to_csv(f"{OUTPUT_DIR}/stage_kruskal_patientlevel.csv", index=False)
