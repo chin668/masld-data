@@ -1,89 +1,96 @@
 """
 06_downsampling.py
-
-Sequencing-depth sensitivity analysis.
-
-Subcutaneous adipose tissue was sequenced more deeply than the other
-compartments, which could in principle inflate the compartmental differences.
-To check that the results are not driven by depth, all cells are downsampled to
-a common depth (the lowest tissue median), the signatures are recalculated, and
-the Friedman test is re-run. If the compartmental differences and their ranking
-are unchanged, the findings are robust to sequencing depth.
-
-Input : mono_macro_with_scores.h5ad
-Output: Friedman results on the depth-matched data
+ 
+Sequencing-depth downsampling sensitivity analysis. Sequencing depth differed
+between compartments, which could in principle inflate gene detection in the
+more deeply sequenced samples. The per-cell depth of each compartment is first
+quantified; cells above the median depth of the shallowest compartment are then
+downsampled to that depth with sc.pp.downsample_counts (random_state=0),
+re-normalised and re-scored; and the cross-compartment Friedman tests are
+repeated on the downsampled scores.
+ 
+The procedure is specified in Section 2.7 of the dissertation and its results
+are reported in Section 4.5.
+ 
+Dissertation sections    : 2.7, 4.5
+Supplementary Appendix   : A9
+ 
+Prerequisites
+-------------
+Depends on 03 (the signature definitions are re-used) and, through it, on 02.
+Continues from a previous script in the same Python session; do not re-load the
+object. Only the imports and the metadata column names are repeated below.
 """
-
-import os
-import scanpy as sc
-import numpy as np
-import pandas as pd
+ 
+# --- Metadata column names (repeated from 01 for readability) ----------------
+PATIENT_COL  = "Patient_ID"
+SAMPLE_COL   = "Sample"
+TISSUE_COL   = "Tissue"
+STAGE_COL    = "StageGroup"
+STAGESEP_COL = "StageSep"
+CELLTYPE_COL = "cell_type_with_cluster"
+CLUSTER_COL  = "leiden_0.5"
+ 
+ 
+# ============================================================================
+# A9. Sensitivity analysis: sequencing-depth downsampling
+# ============================================================================
+ 
+import scanpy as sc, numpy as np, pandas as pd
 from scipy.stats import friedmanchisquare
 from statsmodels.stats.multitest import multipletests
-
-# ---------------------------------------------------------------------------
-# Paths and settings
-# ---------------------------------------------------------------------------
-DATA_PATH = "outputs/signatures/mono_macro_with_scores.h5ad"
-OUTPUT_DIR = "outputs/downsampling"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-adata = sc.read_h5ad(DATA_PATH)
-
+ 
 sig_cols = ["CD14_monocyte_score", "CD16_monocyte_score",
             "Macrophage_complement_score", "Disease_associated_macrophage_score"]
 tissues = ["PBMC", "LIVER", "VAT", "SAT"]
-
-signatures = {
-    "CD14_monocyte_score": ["CD14", "FCN1", "S100A8", "S100A9", "VCAN", "CCR2"],
-    "CD16_monocyte_score": ["FCGR3A", "MS4A7", "LILRB1", "CX3CR1"],
-    "Macrophage_complement_score": ["C1QA", "C1QB", "C1QC", "APOE", "APOC1"],
-    "Disease_associated_macrophage_score": ["TREM2", "CD9", "SPP1", "GPNMB", "LGALS3"],
+ 
+sigs = {
+    "CD14_monocyte_score":                 ["CD14", "FCN1", "S100A8",
+                                            "S100A9", "VCAN", "CCR2"],
+    "CD16_monocyte_score":                 ["FCGR3A", "MS4A7", "LILRB1", "CX3CR1"],
+    "Macrophage_complement_score":         ["C1QA", "C1QB", "C1QC", "APOE", "APOC1"],
+    "Disease_associated_macrophage_score": ["TREM2", "CD9", "SPP1",
+                                            "GPNMB", "LGALS3"],
 }
-
-# ---------------------------------------------------------------------------
-# 1. Quantify the depth difference between compartments
-# ---------------------------------------------------------------------------
-total_counts = np.asarray(adata.layers["counts_RNA"].sum(axis=1)).ravel()
-depth = pd.DataFrame({"Tissue": adata.obs["Tissue"].values, "counts": total_counts})
-print("Median counts per cell by tissue:")
-print(depth.groupby("Tissue")["counts"].median().round(0).to_string())
-
-# Downsample target = lowest tissue median
+ 
+# --- 1. Quantify the depth difference between compartments --------------------
+raw = adata.layers["counts_RNA"]
+tot = np.asarray(raw.sum(axis=1)).ravel()
+depth = pd.DataFrame({"Tissue": adata.obs[TISSUE_COL].values, "counts": tot})
+print("=== Total counts per cell, by compartment ===")
+print(depth.groupby("Tissue")["counts"].describe()[["25%", "50%", "75%"]]
+      .round(0).to_string())
+ 
 target = int(depth.groupby("Tissue")["counts"].median().min())
-print(f"\nDownsampling target: {target} counts per cell")
-
-# ---------------------------------------------------------------------------
-# 2. Downsample to the common depth and recompute the signatures
-# ---------------------------------------------------------------------------
-ad = adata.copy()
-ad.X = ad.layers["counts_RNA"].copy()
-sc.pp.downsample_counts(ad, counts_per_cell=target, random_state=0)
-sc.pp.normalize_total(ad, target_sum=1e4)
-sc.pp.log1p(ad)
-
-for name, genes in signatures.items():
-    sc.tl.score_genes(ad, gene_list=[g for g in genes if g in ad.var_names],
+print(f"\nDownsampling target (median depth of shallowest compartment): {target}")
+ 
+# --- 2. Downsample to a common depth, re-normalise and re-score ---------------
+ad_ds = adata.copy()
+ad_ds.X = ad_ds.layers["counts_RNA"].copy()
+sc.pp.downsample_counts(ad_ds, counts_per_cell=target, random_state=0)
+sc.pp.normalize_total(ad_ds, target_sum=1e4)
+sc.pp.log1p(ad_ds)
+ 
+for name, genes in sigs.items():
+    sc.tl.score_genes(ad_ds, gene_list=[g for g in genes if g in ad_ds.var_names],
                       score_name=name + "_ds", use_raw=False)
-
-# ---------------------------------------------------------------------------
-# 3. Re-run the Friedman test on the depth-matched scores
-# ---------------------------------------------------------------------------
+ 
+# --- 3. Repeat the Friedman tests on the downsampled scores -------------------
 ds_cols = [c + "_ds" for c in sig_cols]
-pt = (ad.obs.groupby(["Patient_ID", "Tissue"], observed=True)[ds_cols]
-      .mean().reset_index())
-
+pt_ds = (ad_ds.obs.groupby([PATIENT_COL, TISSUE_COL], observed=True)[ds_cols]
+         .mean().reset_index())
+ 
 rows = []
 for c, s in zip(sig_cols, ds_cols):
-    wide = pt.pivot(index="Patient_ID", columns="Tissue", values=s)[tissues].dropna()
+    wide = pt_ds.pivot(index=PATIENT_COL, columns=TISSUE_COL,
+                       values=s)[tissues].dropna()
     chi2, p = friedmanchisquare(*[wide[t].values for t in tissues])
-    rows.append({"signature": c, "chi2": round(chi2, 2), "p_raw": p,
-                 **wide.mean().round(2).to_dict()})
-res = pd.DataFrame(rows)
-res["FDR"] = multipletests(res["p_raw"], method="fdr_bh")[1]
-
-print("\nFriedman results after downsampling:")
-print(res.to_string(index=False))
-res.to_csv(f"{OUTPUT_DIR}/downsampled_friedman.csv", index=False)
-
-print(f"\nDownsampling outputs written to: {OUTPUT_DIR}")
+    means = wide.mean().round(2).to_dict()
+    rows.append({"signature": c, "chi2": round(chi2, 2), "p_raw": p, **means})
+ 
+res_ds = pd.DataFrame(rows)
+res_ds["FDR"] = multipletests(res_ds["p_raw"], method="fdr_bh")[1]
+print("\n=== Friedman results after downsampling ===")
+print(res_ds.to_string(index=False))
+res_ds.to_csv(OUTPUT_DIR / "downsampled_friedman.csv", index=False)
+ 
